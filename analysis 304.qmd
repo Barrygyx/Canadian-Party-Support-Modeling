@@ -1,0 +1,562 @@
+---
+title: "Estimating Canadian Party Support with Logistic Regression and Census-Based Post-Stratification"
+author: "GROUP NUMBER: 36"
+date: November 13, 2025
+subtitle: STA304 - Assignment 2
+format: pdf
+editor: visual
+---
+
+```{r, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+library(openintro)
+library(tidyverse)
+library(patchwork)
+library(broom)
+library(dplyr)
+library(tidyr)
+library(cowplot)
+setwd("/Users/Barry/Downloads")
+```
+
+# 1 Introduction
+
+Here is our research question: “What is the likelihood of voting for the Liberal Party and how is it influenced by age groups of the voters”. Predicting election outcomes is an indispensable part of political science, since it helps everyone in the country to understand how demographic factors influence political preferences especially in a country as politically diverse as Canada. The analysis uses datasets “ces2021.csv” from 2021 Canadian Election Study (Canadian Election Study, 2025), and “canada_census2021.csv” collected by Statistics Canada in 2021, to predict the overall popular vote of the next Canadian federal election. The CES data provides political attitudes of individuals in Canada, which is a sample showing how voters’ intentions vary across their personal characteristics. The Census data gives information on personal characteristics of Canadians, which works as the population used for post-stratification. By linking them, the analysis will produce a more realistic regression model with lower variability.
+
+In this report, we will produce a logit regression model with post-stratification to estimate the proportion of voting for each of the five parties (Liberal Party, Conservative Party, New Democratic Party (NDP), Bloc Québécois, and Green Party), and also the impact of age groups and provinces on the result, each with a 95% confidence interval. 338 Canada data show that older voters are significantly more likely to support the Liberal Party instead of Conservative as usual (Fournier, 2021). Meanwhile, the election system in Canada is based on first-past-the-post (FPTP), where the candidate with the most votes in each riding wins, regardless of overall vote share (Fair Vote Canada, 2025). So, the choice of each province will greatly influence the final result. Therefore, we consider age groups and provinces as important factors of proportions of each party’s supporters. Our hypothesis is the Liberal will still have the largest proportion of the five parties, as their opponents' voters are turning to them (Fournier, 2021). This is base on the research "*Final YouGov MRP for the 2025 Canadian federal election: Liberals likely to win a majority"* (YouGov, 2025), which shows that the Liberals would win between **170 and 204 seats**, with a central estimate of **185 seats**. Although the result is for 2025 election, we believe it still has a certain representative role as it comes from the most recent election.
+
+The structure of our report is as follow: the Data section will introduce how the data is collected and cleaned, and a summary of the variables used in the analysis; the Methods section will completely explain all the methodologies, such as how the model is chosen and built; the Result section will show the all the outcomes of our analysis; the Discussion section will conclude the results and state their meanings validity; the Generative AI Statement and the Ethics Statement will finally present how we use AI for help and how we make sure our analysis is reproducible.
+
+# 2 Data
+
+Both datasets used in this analysis were collected by reliable national institutions in Canada. The dataset “ces2021.csv” from the survey of Canadian Election Study, capturing demographics, political preferences, and voting behavior of a sample size over 9 thousand, will be used as survey data to build our model. The Census data “canada_census2021.csv” conducting by Statistics Canada, which collects the demographic information of the entire population, will be used to reweight our model to fit the population. All data processing and visualization were completed in R (R Core Team, 2024) using the tidyverse collection of packages. For our analysis, we will create the variables “vote_liberal”, “vote_conservative”, “vote_ndp”, “vote_bloc”, “vote_green” identify which party the responder voted. In this variable, outcome “1” represents voting for the corresponding party, and “0” represents not voting for it. It can reflect the proportion of each party’s voters which directly provide information of the response variable in our research question. The independent variable “age” captures the information of the voters’ ages, and the independent variable “prov” represents which province the voters live.
+
+```{r, include = FALSE}
+
+census_data <- read_csv("canada_census2021.csv", show_col_types = FALSE)
+
+census_data <- census_data %>%
+  drop_na(agegrp, pr) %>%
+  filter(agegrp >= 7,!agegrp %in% c(88), !pr %in% c(88, 99)) %>%
+  mutate(
+    age = agegrp - 7,
+    prov = recode(as.character(pr),
+      "10" = "Newfoundland and Labrador",
+      "11" = "Prince Edward Island",
+      "12" = "Nova Scotia",
+      "13" = "New Brunswick",
+      "24" = "Quebec",
+      "35" = "Ontario",
+      "46" = "Manitoba",
+      "47" = "Saskatchewan",
+      "48" = "Alberta",
+      "59" = "British Columbia",
+      "70" = "Northern Canada"
+    ),
+    prov = factor(prov,
+      levels = c("Alberta", "British Columbia", "Manitoba",
+                 "New Brunswick", "Newfoundland and Labrador",
+                 "Nova Scotia", "Ontario", "Prince Edward Island",
+                 "Quebec", "Saskatchewan", "Northern Canada"))
+  ) %>%
+  select(age, prov)
+
+```
+
+Before conducting the regression model, some data cleaning steps are necessary to ensure the model can be used for both datasets. First, all responses that contain “not available”, “not applicable” and other missing data are removed for both datasets so that the incomplete response will not cause the model to deviate. Next, we create new variables “vote_liberal”, “vote_conservative”, “vote_ndp”, “vote_bloc”, “vote_green”, and “age” in dataset “ces2021.csv”. The first five “vote” variables reflect if the voter chooses the corresponding Party (1) or other party (0). The “age” is created to divide the age into different groups so that the Census data can be applied to this model, since ages in the Census data are grouped by intervals. Because the legal voting age is 18, we remove all responses from both groups where the age is less than 18. We consider 18-19 as the first and baseline age group, i.e., "0" in "age". Starting from 20, the "age" value increases by 1 every 5 years (20-24 is "1", 25-29 is "2", etc.). We also create “prov” in both datasets to recode numbers representing each province to their original names. Moreover, we merge the “Northwest Territories”, “Nunavut” and “Yukon” into “Northern Canada” for the survey data to make sure the model fit for both datasets, as these three provinces are stated as “Northen Canada” in the Census data.
+
+```{r, include = FALSE, warning = FALSE}
+
+survey_data <- read_csv("ces2021.csv", show_col_types = FALSE)
+
+survey_data <- survey_data %>%
+  drop_na(cps21_age, cps21_province, cps21_votechoice) %>%
+  mutate(
+    age = cps21_age,
+   vote_liberal = if_else(cps21_votechoice == 1, 1, 0),
+    vote_conservative = if_else(cps21_votechoice == 2, 1, 0),
+    vote_ndp = if_else(cps21_votechoice == 3, 1, 0),
+    vote_bloc = if_else(cps21_votechoice == 4, 1, 0),
+    vote_green = if_else(cps21_votechoice == 5, 1, 0),
+    prov = as.character(cps21_province)
+  ) %>%
+  filter(age >= 18) %>%
+  mutate(
+    age = case_when(
+      age >= 18 & age <= 19 ~ 0,
+      age >= 20 & age <= 24 ~ 1,
+      age >= 25 & age <= 29 ~ 2,
+      age >= 30 & age <= 34 ~ 3,
+      age >= 35 & age <= 39 ~ 4,
+      age >= 40 & age <= 44 ~ 5,
+      age >= 45 & age <= 49 ~ 6,
+      age >= 50 & age <= 54 ~ 7,
+      age >= 55 & age <= 59 ~ 8,
+      age >= 60 & age <= 64 ~ 9,
+      age >= 65 & age <= 69 ~ 10,
+      age >= 70 & age <= 74 ~ 11,
+      age >= 75 & age <= 79 ~ 12,
+      age >= 80 & age <= 84 ~ 13,
+      age >= 85 ~ 14
+    ),
+    prov = recode(prov,
+      "1"  = "Alberta",
+      "2"  = "British Columbia",
+      "3"  = "Manitoba",
+      "4"  = "New Brunswick",
+      "5"  = "Newfoundland and Labrador",
+      "6"  = "Northwest Territories",
+      "7"  = "Nova Scotia",
+      "8"  = "Nunavut",
+      "9"  = "Ontario",
+      "10" = "Prince Edward Island",
+      "11" = "Quebec",
+      "12" = "Saskatchewan",
+      "13" = "Yukon"
+    ),
+    prov = factor(prov)
+  ) %>%
+  select(age, prov,
+         vote_liberal, vote_conservative,
+         vote_ndp, vote_bloc, vote_green) %>%
+  drop_na(age, prov,
+         vote_liberal, vote_conservative,
+         vote_ndp, vote_bloc, vote_green)
+
+summary(survey_data)
+
+```
+
+```{r, include = FALSE}
+
+survey_data <- survey_data %>%
+  mutate(
+    prov = recode(as.character(prov),
+      "Northwest Territories"  = "Northern Canada",
+      "Nunavut"  = "Northern Canada", 
+      "Yukon" = "Northern Canada"
+    ),
+    prov = factor(prov,
+      levels = c("Newfoundland and Labrador", "Prince Edward Island",
+                 "Nova Scotia", "New Brunswick", "Quebec", "Ontario",
+                 "Manitoba", "Saskatchewan", "Alberta",
+                 "British Columbia", "Northern Canada"))
+  )
+
+common_levels <- c("Newfoundland and Labrador", "Prince Edward Island",
+                   "Nova Scotia", "New Brunswick", "Quebec", "Ontario",
+                   "Manitoba", "Saskatchewan", "Alberta",
+                   "British Columbia", "Northern Canada")
+
+survey_data$prov  <- factor(survey_data$prov, levels = common_levels)
+census_data$prov  <- factor(census_data$prov, levels = common_levels)
+```
+
+```{r, include=FALSE}
+
+age_labels <- c(
+  "0" = "18–19",
+  "1" = "20–24",
+  "2" = "25–29",
+  "3" = "30–34",
+  "4" = "35–39",
+  "5" = "40–44",
+  "6" = "45–49",
+  "7" = "50–54",
+  "8" = "55–59",
+  "9" = "60–64",
+  "10" = "65–69",
+  "11" = "70–74",
+  "12" = "75–79",
+  "13" = "80–84",
+  "14" = "85+"
+)
+
+survey_age_counts <- survey_data %>%
+  count(age) %>%
+  mutate(
+    source = "Survey",
+    age = factor(age, levels = names(age_labels), labels = age_labels)
+  )
+
+census_age_counts <- census_data %>%
+  count(age) %>%
+  mutate(
+    source = "Census",
+    age = factor(age, levels = names(age_labels), labels = age_labels)
+  )
+
+age_counts <- bind_rows(survey_age_counts, census_age_counts)
+
+```
+
+### Graph 1: Age Group Distribution Comparison Between Survey Data vs Canadian Census Population
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+plot_survey_age <- ggplot(survey_age_counts, aes(x = age, y = n)) +
+  geom_col(fill = "#5DA5DA") +
+  theme_minimal() +
+  labs(
+    title = "Age in Survey Data",
+    x = "Age Group",
+    y = "Count"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 10)
+  )
+
+plot_census_age <- ggplot(census_age_counts, aes(x = age, y = n)) +
+  geom_col(fill = "#F17CB0") +
+  theme_minimal() +
+  labs(
+    title = "Age in Census Data",
+    x = "Age Group",
+    y = "Count"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 10)
+  )
+
+combined_age_plot <- plot_grid(
+  plot_survey_age,
+  plot_census_age,
+  ncol = 2,
+  label_size = 14
+)
+
+combined_age_plot
+
+
+```
+
+```{r, include=FALSE}
+
+raw_results <- survey_data %>%
+  summarise(
+    liberal_raw       = mean(vote_liberal),
+    conservative_raw  = mean(vote_conservative),
+    ndp_raw           = mean(vote_ndp),
+    bloc_raw          = mean(vote_bloc),
+    green_raw         = mean(vote_green)
+  )
+```
+
+### Graph 2: Comparison of Provincial Distributions Between Survey Data and the Canadian Census Population
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+prov_labels <- c(
+  "Newfoundland and Labrador",
+  "Prince Edward Island",
+  "Nova Scotia",
+  "New Brunswick",
+  "Quebec",
+  "Ontario",
+  "Manitoba",
+  "Saskatchewan",
+  "Alberta",
+  "British Columbia",
+  "Northern Canada"
+)
+
+survey_prov_counts <- survey_data %>%
+  count(prov) %>%
+  mutate(source = "Survey")
+
+census_prov_counts <- census_data %>%
+  count(prov) %>%
+  mutate(source = "Census")
+
+plot_survey_prov <- ggplot(survey_prov_counts, aes(x = prov, y = n)) +
+  geom_col(fill = "#5DA5DA") +
+  theme_minimal() +
+  scale_x_discrete(limits = prov_labels) +
+  labs(
+    title = "Province in Survey Data",
+    x = "Province",
+    y = "Count"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 9))
+
+plot_census_prov <- ggplot(census_prov_counts, aes(x = prov, y = n)) +
+  geom_col(fill = "#F17CB0") +
+  theme_minimal() +
+  scale_x_discrete(limits = prov_labels) +
+  labs(
+    title = "Province in Census Data",
+    x = "Province",
+    y = "Count"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 9))
+
+combined_prov_plot <- plot_grid(
+  plot_survey_prov,
+  plot_census_prov,
+  ncol = 2,
+  rel_widths = c(1, 1),
+  label_size = 14
+)
+
+combined_prov_plot
+
+
+
+```
+
+As can be seen from the images, the age and province distributions of the survey data used as a sample are very similar to those of the census data used as a population. The youngest and oldest members of the population tend to have a higher proportion. This may favor the political parties supported by these groups, thus potentially biasing the predicted value of the population. However, the voter turnout rankings by province are almost identical, with Ontario having the highest and Prince Edward Island the lowest. This means that the bias caused by differences in province is very small.
+
+# 3 Methods
+
+## 3.1 Model Specifics
+
+A logistic regression framework is used to examine how individual characteristics relate to support for each political party, as the voting variables are binary indicators of whether a respondent supports party $p$. This specification assumes that the logit link is appropriate for modeling these binary outcomes, that individual survey responses are independent, and that the relationship between the predictors and the log–odds of party support is correctly specified, including the ordered age-group effect on the logit scale. These assumptions are reasonable given the structure of the survey data, where responses are collected from individuals and the main covariates—age and province—capture key demographic patterns relevant to voting behaviour. For each of the five major parties (Liberal, Conservative, NDP, Bloc, Green), the probability of supporting party $p$ is modeled as:
+
+$$
+\text{logit}(\pi_{ip})
+= \log\!\left(\frac{\pi_{ip}}{1 - \pi_{ip}}\right)
+= \beta_{0p} + \beta_{1p}\,\text{age}_{i}
++ \boldsymbol{\beta}_{2p}^{\top}\mathbf{Prov}_{i}.
+$$
+
+Here, $\beta_{0p}$ is the party–specific intercept which gives the log–odds of intending to vote for party $p$ for a respondent in the reference categories corresponding to a person 18–19 year–old living in Newfoundland and Labrador. The coefficient $\beta_{1p}$ captures how the log–odds of supporting party $p$ change when increasing by one age group (each representing a five–year increase in age), relative to the reference group of 18–19-year olds. The vector $\boldsymbol{\beta}_{2p}$ collects the coefficients for the province indicators for Prince Edward Island, Nova Scotia, New Brunswick, Quebec, Ontario, Manitoba, Saskatchewan, Alberta, British Columbia, and Northern Canada, with Newfoundland and Labrador omitted as the baseline. Each element of $\boldsymbol{\beta}_{2p}$ therefore represents the difference in log–odds of intending to vote for party $p$ between that province and Newfoundland and Labrador, holding all other factors fixed.
+
+```{r, include= FALSE}
+# Logistic regression model
+model1 <- glm(vote_liberal ~ age + prov,
+             data = survey_data,
+             family = binomial)
+model2 <- glm(vote_conservative ~ age + prov,
+             data = survey_data,
+             family = binomial)
+model3 <- glm(vote_ndp ~ age + prov,
+             data = survey_data,
+             family = binomial)
+model4 <- glm(vote_bloc ~ age + prov,
+             data = survey_data,
+             family = binomial)
+model5 <- glm(vote_green ~ age + prov,
+             data = survey_data,
+             family = binomial)
+
+```
+
+## 3.2 Post-Stratification
+
+### Post-stratification
+
+In order to estimate population–level support for each political party, the model-based predictions from the survey are adjusted using post-stratification. In this setting, post-stratification uses known population totals from the Census to reweight the fitted probabilities so that the final estimates reflect the demographic composition of the Canadian population rather than that of the survey sample.
+
+Post-stratification cells are defined by the cross-classification of 15 age groups and 11 province categories. These variables are used because age and province are both plausibly related to voting behaviour and are measured in a consistent way in the survey and the Census. Age captures generational differences in party support, while province reflects geographic and political heterogeneity across Canada. Other potential covariates (such as education or income) are not included in the cell definitions because comparable joint information is not available in both data sources.
+
+Let $\hat{\pi}_{ag,pr}$ denote the predicted probability of supporting party $p$ for individuals in age group $ag$ and province $pr$, obtained from the fitted regression model. Let $n_{ag,pr}$ represent the corresponding Census population count for that demographic cell. The post-stratified estimate of the proportion of Canadians who support party $p$ is then
+
+$$
+\hat{\theta}_{p}^{\,PS}
+= \frac{\sum_{age,prov} n_{age,prov}\,\hat{\pi}_{age,prov}}
+       {\sum_{age,prov} n_{age,prov}}.
+$$
+
+This estimator combines the model predictions with the Census population distribution across the defined cells, producing estimates that more accurately reflect the demographic composition of the Canadian population.
+
+# 4 Results
+
+### Table 1: The estimated coefficients from the logistic regression models
+
+```{r,  echo=FALSE, message=FALSE, warning=FALSE}
+
+lib  <- tidy(model1) %>% mutate(party="Liberal")
+con  <- tidy(model2) %>% mutate(party="Conservative")
+ndp  <- tidy(model3) %>% mutate(party="NDP")
+bloc <- tidy(model4) %>% mutate(party="Bloc")
+green<- tidy(model5) %>% mutate(party="Green")
+
+all_coef <- bind_rows(lib, con, ndp, bloc, green)
+
+all_coef <- all_coef %>%
+  mutate(
+    predictor = term %>%
+      gsub("prov", "", .) %>%
+      gsub("\\(Intercept\\)", "Intercept", .)
+  )
+
+
+coef_matrix <- all_coef %>%
+  select(predictor, party, estimate) %>%
+  pivot_wider(names_from = party, values_from = estimate)
+
+knitr::kable(
+  coef_matrix,
+  digits = 3
+)
+
+
+```
+
+Table 1 summarizes the estimated coefficients from the logistic regression models. The age predictor shows the largest positive coefficient for the Bloc at `r coef_matrix$Bloc[coef_matrix$predictor == "age"]` for the Block party, meaning that each one-unit increase in the age group variable (corresponding to moving to the next five-year interval) raises the log-odds of supporting the Bloc by that amount. Meanwhile the Liberal and Conservative parties also have positive age coefficients and the NDP and Green have negative ones. Provincial differences are more protruding, particularly the strong Bloc support in Quebec, with an log-odds ratio of  `r coef_matrix$Bloc[coef_matrix$predictor == "Quebec"]`, meaning that the Quebec coefficient reflects how much higher the log-odds of supporting the Bloc are in Quebec relative to the reference province which is the Newfoundland and Labrador. These patterns provide the basis for the post-stratified predictions reported below, where the model estimates are combined with the Census age–province distribution to obtain population-level support estimates.
+
+
+```{r, include=FALSE}
+
+# Liberal
+census_data_counts <- census_data %>%
+  group_by(age, prov) %>%
+  summarise(n = n())
+
+census_data_counts$estimate <-
+  model1 %>%
+  predict(newdata = census_data_counts, type = "response")
+
+liberal_post <- census_data_counts %>%
+  ungroup(age) %>%
+  mutate(predict_prop = estimate * n) %>%
+  summarise(lib_pred = sum(predict_prop) / sum(n))
+
+
+# Conservative
+census_data_counts$estimate <-
+  model2 %>%
+  predict(newdata = census_data_counts, type = "response")
+
+conservative_post <- census_data_counts %>%
+  ungroup(age) %>%
+  mutate(predict_prop = estimate * n) %>%
+  summarise(con_pred = sum(predict_prop) / sum(n))
+
+
+# NDP
+census_data_counts$estimate <-
+  model3 %>%
+  predict(newdata = census_data_counts, type = "response")
+
+ndp_post <- census_data_counts %>%
+  ungroup(age) %>%
+  mutate(predict_prop = estimate * n) %>%
+  summarise(ndp_pred = sum(predict_prop) / sum(n))
+
+
+# Bloc
+census_data_counts$estimate <-
+  model4 %>%
+  predict(newdata = census_data_counts, type = "response")
+
+bloc_post <- census_data_counts %>%
+  ungroup(age) %>%
+  mutate(predict_prop = estimate * n) %>%
+  summarise(bloc_pred = sum(predict_prop) / sum(n))
+
+
+# Green
+census_data_counts$estimate <-
+  model5 %>%
+  predict(newdata = census_data_counts, type = "response")
+
+green_post <- census_data_counts %>%
+  ungroup(age) %>%
+  mutate(predict_prop = estimate * n) %>%
+  summarise(green_pred = sum(predict_prop) / sum(n))
+
+post_results <- bind_cols(liberal_post, conservative_post, ndp_post, bloc_post, green_post)
+```
+
+### Table 2: Raw Survey and Post-Stratified Predicted Percentage Support for Each Political Party
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+raw_results <- survey_data %>%
+  summarise(
+    liberal_raw       = mean(vote_liberal),
+    conservative_raw  = mean(vote_conservative),
+    ndp_raw           = mean(vote_ndp),
+    bloc_raw          = mean(vote_bloc),
+    green_raw         = mean(vote_green)
+  )
+
+vote_results <- tibble(
+  Party = c("Liberal", "Conservative", "NDP", "Bloc", "Green"),
+  
+  `Raw Survey (%)` = c(
+    raw_results$liberal_raw,
+    raw_results$conservative_raw,
+    raw_results$ndp_raw,
+    raw_results$bloc_raw,
+    raw_results$green_raw
+  ) * 100,
+  
+  `Post-stratified (%)` = c(
+    liberal_post$lib_pred,
+    conservative_post$con_pred,
+    ndp_post$ndp_pred,
+    bloc_post$bloc_pred,
+    green_post$green_pred
+  ) * 100
+) %>%
+  mutate(
+    `Raw Survey (%)` = round(`Raw Survey (%)`, 1),
+    `Post-stratified (%)` = round(`Post-stratified (%)`, 1)
+  )
+
+knitr::kable(
+  vote_results,
+  digits = 1
+)
+
+
+
+
+```
+
+Table 2 shows the predicted percentage support for both the raw survey results and after post-stratified results. The Liberals have the highest share with `r liberal_post$lib_pred * 100`%, followed by the Conservatives with `r conservative_post$con_pred * 100`%, while the NDP `r ndp_post$ndp_pred *100`% comes next. Support for the Bloc `r bloc_post$bloc_pred *100`% and the Green Party `r green_post$green_pred *100`% is much lower. This table directly compares the raw and adjusted estimates, and the two sets of values differ by less than three percentage points for every party. Liberal and Conservative support remains nearly the same, while the NDP and Green increase slightly and the Bloc decreases modestly after weighting. These small shifts suggest that the survey sample was already quite close to the population in terms of age and province, so post-stratification mainly fine-tunes the estimates rather than altering the overall pattern of party support.
+
+
+# 5 Discussion
+
+Our analysis began with the expectation that the Liberal Party would still hold the largest share of support nationally and that voting intentions would differ systematically across age groups and provinces. To assess these patterns, we modeled each party’s support using logistic regression, allowing the age-group structure and provincial differences observed in the CES data to shape the predicted probabilities of voting for each party. Because the survey sample does not perfectly cover the whole population, these model-based predictions were then combined with the Canadian Census counts through post-stratification. This produced estimates that reflect Canada’s actual age and province composition, ensuring that our evaluation of the hypotheses is grounded in both the behavioral patterns captured by the survey and the demographic realities of the country.
+
+The logistic regression results indicate that age plays a more consistent role than province in shaping voting preferences. Liberal and Conservative support increases with age, whereas the NDP and Green coefficients are negative, which aligns with these two parties receiving the highest overall levels of support in the data. The Bloc is the only party with both a positive age coefficient and a strong provincial effect, as its Quebec coefficient is substantially larger than that of any other province. Outside Quebec, combining the intercept with the provincial coefficients yields strongly negative values, reflecting the party’s geographically concentrated base. Overall, the coefficient patterns show that age contributes to broad national trends across parties, while provincial effects are far more localized.
+
+Building on these regression results, the post-stratified estimates provide a population-level view of party support once the Census age–province distribution is taken into account. The results point to a stable and intuitive ranking: the Liberals remain the most popular party, followed by the Conservatives and then the NDP, with the Bloc and the Green Party attracting much smaller shares. Applying the Census weights produces only minimal changes relative to the raw survey proportions, with the only noticeable shift being a modest movement from Bloc to NDP support. These adjustments are not large enough to alter the overall ordering, indicating that the CES sample is already well aligned with the population along the demographic dimensions used in the model. As a result, post-stratification mainly confirms rather than changes the trends observed in the unweighted data.
+
+A key limitation of this project is that we could only use age and province as predictors, because these are the only variables measured in a fully compatible way between CES and the Census. One possible solution would be to include additional factors such as education or income to reduce the potential omitted variable bias and capture more realistic voting patterns. However, implementing these solutions aren't feasible in the current project since the Census data does not provide these variables jointly in the same structure needed for post-stratification, meaning the necessary cross-classified population counts do not exist. As a result, the model is restricted to a simplified demographic structure, but this level of detail is still sufficient to capture the major trends in voting behaviour and to generate reasonably reliable population-level predictions.
+
+A simple follow-up would be to explore external data sources that provide joint distributions for variables like education or income, so that future post-stratification could incorporate more detailed demographic structure beyond age and province. A complementary direction is to extend the analysis across multiple election cycles, applying the same modelling and post-stratification framework to earlier or later CES–Census pairs, which would make it possible to observe how consistently these age–province voting patterns emerge and whether any longer-term trends appear.
+
+In a word, by using logistic regression to model party support and post-stratification to align the survey predictions with the national age–province distribution, a clear picture of how demographic patterns shape voting intentions in Canada is obtained. The adjusted estimates closely reflected the raw survey values, showing a consistent ranking with the hypothesis where Liberals leads, followed by the Conservatives and the NDP, and much lower support for the Bloc and the Greens. The model reveals that age is a meaningful predictor across all parties, while provincial differences are generally small except for the Bloc’s strong concentration in Quebec. Taken together, the analysis links individual survey responses with Canada’s demographic makeup to give a grounded and intuitive snapshot of how different groups lean politically.
+
+\newpage
+
+# 6 Generative AI Statement
+
+We use generative AI ChatGPT (OpenAI, 2025) to check spelling and grammar. Our report has been polished by AI to make the language more formal and accurate, and easier for readers to understand. However, none of the text or content was directly generated by AI; everything was written by us first and then submitted to AI for revision.
+
+Meanwhile, our code was also checked by AI to ensure it didn't deviate from its intended meaning. This is also a strength of AI. In contrast, AI isn't good at directly generating the most suitable code; it may deviate somewhat from the model we need.
+
+We first defined the research question, the variables involved, and the methods we would use ourselves. This ensured that the core content of the report originated entirely from our own ideas, not from AI. We also reviewed the AI's modifications to ensure that they merely made the report more understandable and did not add overly technical descriptions or alter our direction.
+
+# 7 Ethics Statement
+
+### Reproducibility
+
+All parts of the analysis were done using R scripts inside the R Markdown file, so every step can be reproduced simply by re-running the document including cleaning the data, fitting the models and producing the post-stratified estimates. No manual adjustments were made, and all code used for the results appears directly in the report. This makes the workflow transparent and ensures that anyone with access to the same data can obtain the same results which ensures the reproductivity for the project.
+
+### Research Ethics and Participant Privacy
+
+The analysis is based entirely on the 2021 CES and the Census, both of which are publicly available and already being de-identified by the data providers. The CES removes names, contact information, and any variables that could reasonably identify a respondent, and the Census data used here are aggregated into demographic groups rather than individual records. In this case, the privacy of human participants is fully protected. For this reason, the work does not require Research Ethics Board approval, as it relies only on existing anonymized data and does not involve collecting or handling new personal information.
+
+# 8 Bibliography
+
+1.  *Canadian election study*. Canadian Election Study. (2025). http://www.ces-eec.ca/2021-canadian-election-study/ 
+
+2.  YouGov. (2025, April 25). *Final YouGov MRP for the 2025 Canadian federal election: Liberals likely to win a majority*. [https://today.yougov.com/politics/articles/52070-final-yougov-mrp-for-2025-canadian-federal-election-liberals-likely-to-win-majority-poll](https://today.yougov.com/politics/articles/52070-final-yougov-mrp-for-2025-canadian-federal-election-liberals-likely-to-win-majority-poll?utm_source=chatgpt.com)
+
+3.  Fournier, P. J. (2021, April 25). 338Canada: The Liberals are winning over older—normally conservative—voters - macleans.ca. https://macleans.ca/politics/ottawa/338canada-the-liberals-are-winning-over-older-normally-conservative-voters/ 
+
+4.  *What is first past the post?*. Fair Vote Canada. (2025, May 5). https://www.fairvote.ca/what-is-first-past-the-post/ 
+
+5.  OpenAI. (2025). *ChatGPT* (Nov 20 version) \[Large language model\]. <https://chat.openai.com/>
+
+6.  *R Core Team*. (2024). R: A Language and Environment for Statistical Computing. R Foundation for Statistical Computing. https://www.R-project.org/
+
+# 9 Appendix
+
+Any additional notes/derivations that are supplementary to the report can be added in an appendix. This section will not be directly graded, but may be included for completion-sake.
